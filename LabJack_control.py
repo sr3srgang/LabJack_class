@@ -23,14 +23,15 @@ class LabJackDevice:
                  device_type,
                  connection_type,
                  device_identifier,
-                 a_scan_list_names=["AIN0", "AIN1", "AIN2"],
-                 scan_rate=None,
+                 ch_names=["AIN0", "AIN1", "AIN2"],
+                 scan_rate=100e3,
                  scan_duration=1.5,
                  num_reads=1,
-                 do_trigger=True,
-                 trigger_mode=None,
-                 trigger_edge=None,
-                 trigger_name="DIO0"):
+                 do_trigger=False,
+                 trigger_ch_name="DIO0",
+                 trigger_mode=LabJackTriggerModeEnum.ConditionalReset,
+                 trigger_edge=LabJackTriggerEdgeEnum.Rising,
+                 ):
         """
         Initialize the LabJackDevice.
 
@@ -55,16 +56,16 @@ class LabJackDevice:
         self.device_identifier = device_identifier
 
         # Streaming configuration
-        self.a_scan_list_names = a_scan_list_names
+        self.a_scan_list_names = ch_names
         self.num_channels = len(self.a_scan_list_names)
-        self.scan_rate = scan_rate if scan_rate is not None else 100e3 / self.num_channels
+        self.scan_rate = scan_rate
         self.scan_duration = scan_duration
         self.num_reads = num_reads
 
         self.do_trigger = do_trigger
-        self.trigger_mode = trigger_mode if trigger_mode is not None else LabJackTriggerModeEnum.ConditionalReset
-        self.trigger_edge = trigger_edge if trigger_edge is not None else LabJackTriggerEdgeEnum.Rising
-        self.trigger_name = trigger_name
+        self.trigger_mode = trigger_mode
+        self.trigger_edge = trigger_edge
+        self.trigger_name = trigger_ch_name
 
         # Internal state
         self.handle = None
@@ -199,7 +200,7 @@ class LabJackDevice:
         num_reads = self.num_reads
 
         # Calculate scans per read
-        scans_per_read = int(np.ceil(scan_rate * scan_duration / num_reads))
+        scans_per_read = int(np.ceil(scan_rate * scan_duration))
 
         # Device configuration for streaming
         # Ensure triggered stream is disabled initially.
@@ -220,78 +221,33 @@ class LabJackDevice:
             print("<<< Triggered streaming set up.")
 
         # Start streaming
-        ljm.eStreamStart(handle, scans_per_read, self.num_channels, a_scan_list, scan_rate)
-        print(f">>> Streaming started with a scan rate of {scan_rate:0.0f} Hz")
-        print(f"\tPerforming {num_reads} stream read(s).")
-
-        if self.do_trigger:
-            print(">>> Waiting for trigger...\n")
-
-        tot_scans = 0
-        tot_skip = 0
-        total_data = []  # Accumulate data across reads
-        i = 1
-        ljm_scan_backlog = 0
-        start_time = datetime.now()
+        try:
+            ljm.eStreamStart(handle, scans_per_read, self.num_channels, a_scan_list, scan_rate)
+        except ljm.LJMError as ljmex:
+            ljm.close(handle)
+            raise LabJackStreamingError("LabJack library-level error during stream stop") from ljmex
+        except Exception as ex:
+            ljm.close(handle)
+            raise LabJackStreamingError("Non LabJack library-level error during stream stop") from ex
+        print(f">>> Streaming started with a scan rate of {scan_rate} Hz")
 
         # Read stream data for the specified number of reads.
-        while i <= num_reads:
-            try:
-                ret = ljm.eStreamRead(handle)
-                a_data = ret[0]
-                ljm_scan_backlog = ret[2]
-                scans = len(a_data) / self.num_channels
+        
+        try:
+            ret = ljm.eStreamRead(handle)
+            print(f">>> Started reading steam...")
+            if self.do_trigger:
+                print(">>> Waiting for trigger...\n")
+            end_time = datetime.now()
 
-                total_data.extend(a_data)
-                tot_scans += scans
-
-                # Count skipped samples (indicated by -9999 values)
-                cur_skip = a_data.count(-9999.0)
-                tot_skip += cur_skip
-
-                print(f"\teStreamRead {i}")
-                # Print first scan results for each channel.
-                ain_str = "".join(
-                    f"{self.a_scan_list_names[j]} = {a_data[j]:0.5f}, " for j in range(self.num_channels)
-                )
-                print(f"\t\t1st scan out of {int(scans)}: {ain_str}")
-                print(f"\t\tScans Skipped = {cur_skip / self.num_channels:0.0f}, "
-                      f"Scan Backlogs: Device = {ret[1]}, LJM = {ret[2]}\n")
-                i += 1
-
-            except ljm.LJMError as ljmex:
-                # If no scans are returned, continue; otherwise, propagate the error.
-                if ljmex.errorCode != ljm.errorcodes.NO_SCANS_RETURNED:
-                    raise ljmex
-                continue
-
-        end_time = datetime.now()
-        elapsed = (end_time - start_time).total_seconds()
-
-        print("<<< Reading ended.\n")
-        skipped_scans = tot_skip / self.num_channels
-
-        print(f"\tTotal scans = {tot_scans}")
-        print(f"\tTime taken = {elapsed:.6f} seconds")
-        print(f"\tLJM Scan Rate = {scan_rate:f} scans/second")
-        print(f"\tTimed Scan Rate = {(tot_scans / elapsed):f} scans/second")
-        print(f"\tTimed Sample Rate = {(tot_scans * self.num_channels / elapsed):f} samples/second")
-        print(f"\tSkipped scans = {skipped_scans:0.0f}\n")
-
-        # Process raw streamed data into channel-specific data.
-        ch_data = LabJackaData2chData(total_data, self.num_channels, scan_rate)
-        records = {}
-        for inx, a_scan_list_name in enumerate(self.a_scan_list_names):
-            records[a_scan_list_name] = ch_data[inx]
-
-        self.stream_data = {
-            "aScanListNames": self.a_scan_list_names,
-            "scanRate": scan_rate,
-            "totScans": tot_scans,
-            "skippedScans": tot_skip,
-            "records": records
-        }
-
+        except ljm.LJMError as ljmex:
+            raise ljmex
+            # # If no scans are returned, continue; otherwise, propagate the error.
+            # if ljmex.errorCode != ljm.errorcodes.NO_SCANS_RETURNED:
+            #     raise ljmex
+            
+        print("<<< stream result returned.\n")
+        
         # Stop the stream, ensuring that even if errors occurred, we try to clean up.
         try:
             print(">>> Stopping Stream....")
@@ -303,6 +259,36 @@ class LabJackDevice:
         except Exception as ex:
             ljm.close(handle)
             raise LabJackStreamingError("Non LabJack library-level error during stream stop") from ex
+        
+            
+        a_data = ret[0]
+        scans = len(a_data) / self.num_channels
+
+        # Count skipped samples (indicated by -9999 values)
+        N_skip = a_data.count(-9999.0) / self.num_channels
+
+        # print(f"\teStreamRead {i}")
+        # Print scan results for each channel.
+        ain_str = "".join(
+            f"{self.a_scan_list_names[j]} = {a_data[j]:0.5f}, " for j in range(self.num_channels)
+        )
+        print(f"\t\tscan out of {int(scans)}: {ain_str}")
+        print(f"\t\tSamples Skipped = {N_skip:0.0f}, "
+                f"Scan Backlogs: Device = {ret[1]}, LJM = {ret[2]}\n")
+
+        # Process raw streamed data into channel-specific data.
+        ch_data = LabJackaData2chData(a_data, self.num_channels, scan_rate)
+        records = {}
+        for inx, a_scan_list_name in enumerate(self.a_scan_list_names):
+            records[a_scan_list_name] = ch_data[inx]
+
+        self.stream_data = {
+            "ch_names": self.a_scan_list_names,
+            "scan_rate": scan_rate,
+            "stream_end_time": end_time,
+            "skipped_scans": {"device": ret[1], "labjack": ret[2]},
+            "records": records
+        }
 
         return self.stream_data
 
@@ -327,14 +313,13 @@ if __name__ == "__main__":
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
         device_identifier='192.168.1.92',
-        a_scan_list_names=["AIN10", "AIN13"],
-        # scan_rate=None,
-        scan_duration=1.5,
-        num_reads=1,
+        ch_names=["AIN10", "AIN13"],
+        scan_rate=50e3,
+        scan_duration=0.003,
         do_trigger=False,
+        trigger_ch_name="DIO1",
         # trigger_mode=None,
         # trigger_edge=None,
-        trigger_name="DIO1",
     )
     
     lj_device.connect()
@@ -343,8 +328,5 @@ if __name__ == "__main__":
     
     lj_device.disconnect()
 
-    pprint(data)
-    pprint(data["records"]["AIN10"])
-    
-if __name__ == "__main__":
-    pass
+    # pprint(data)
+    pprint(data["records"])
