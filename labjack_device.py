@@ -307,12 +307,10 @@ class LabJackDevice:
 
 
 if __name__ == "__main__":
-    from pprint import pprint
-
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
-        device_identifier='192.168.1.92',
+        device_identifier='192.168.1.128',
     )
     
     del lj_device

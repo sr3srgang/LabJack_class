@@ -1,4 +1,4 @@
-from LabJack_device import LabJackDevice
+from labjack_device import LabJackDevice
 from labjack import ljm
 from _ljm_aux import *
 import numpy as np
@@ -345,9 +345,7 @@ class StreamRead:
         msg += f"\n\trecords = \n"
         msg += indent(pformat(self.records), "\t\t")
         msg += f"\n\tduration = {self.scan_duration_s} s"
-        msg += f"\n\tsampling rate ="
-        msg += f"\n\t\t{self.total_scan_rate_Hz} total samples/s"
-        msg += f"\n\t\t{self.scan_rate_per_channel_Hz} samples/s/channel"
+        msg += f"\n\tsampling rate = {self.total_scan_rate_Hz} total samples/s, {self.scan_rate_per_channel_Hz} samples/s/channel"
         msg += f"\n\ttriggered = {self.do_trigger}"
         if self._do_trigger:
             msg += f"\n\t\ttrigger channel = {self.trigger_channel}"
@@ -356,18 +354,15 @@ class StreamRead:
         return msg
         
 if __name__ == "__main__":
-    
-    
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
-        device_identifier='192.168.1.92',
+        device_identifier='192.168.1.128',
     )
-    
-    lj_device._connect()
 
     streamRead = lj_device.stream_read(["AIN0", "AIN1"], 1)
+    
     print(streamRead)
     print()
     
-    lj_device._disconnect()
+    del lj_device
