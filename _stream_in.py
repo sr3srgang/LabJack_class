@@ -3,6 +3,8 @@ from labjack import ljm
 from _ljm_aux import *
 
 import asyncio
+import threading
+import queue
 
 import numpy as np
 from datetime import datetime
@@ -26,11 +28,13 @@ class StreamIn:
     @property
     def scan_channels(self): return self._scan_channels
     @property
-    def scan_duration_input_s(self): return self._scan_duration_input
+    def duration_input_s(self): return self._duration_input
     @property
-    def total_scan_rate_Hz(self): return self._total_scan_rate
+    def sampling_rate_Hz(self): return self._sampling_rate
     @property
-    def scans_per_read_per_channel(self): return self._scans_per_read_per_channel
+    def scan_rate_Hz(self): return self._scan_rate
+    @property
+    def scans_per_read(self): return self._scans_per_read
     @property
     def do_trigger(self): return self._do_trigger
     @property
@@ -43,21 +47,25 @@ class StreamIn:
     def trigger_timeout_s(self): return self._trigger_timeout
     # #derived 
     @property
-    def scan_duration_s(self): return self._scan_duration
+    def duration_s(self): return self._duration
     @property
-    def scan_rate_per_channel_Hz(self): return self._scan_rate_per_channel
+    def scan_rate_Hz(self): return self._scan_rate
+    @property
+    def num_samples(self): return self._num_samples
+    @property
+    def num_scans(self): return self._num_scans
     @property
     def records(self): return self._records
     @property
-    def skipped_total_scans(self): return self._skipped_total_scans
+    def skipped_samples(self): return self._skipped_samples
 
     def __init__(self,
                 device: LabJackDevice,
                 scan_channels: list[str] = ["AIN0", "AIN1", "AIN2"],
-                scan_duration_s: int = 1,
+                duration_s: int = 1,
                 *,
-                total_scan_rate_Hz: float = 100e3,
-                scans_per_read_per_channel: int | None = None,
+                sampling_rate_Hz: float = 100e3,
+                scans_per_read: int | None = None,
                 do_trigger: bool = False,
                 trigger_channel : str = "DIO0",
                 trigger_mode: LabJackTriggerModeEnum = LabJackTriggerModeEnum.ConditionalReset,
@@ -71,9 +79,9 @@ class StreamIn:
             device: LabJackDevice object.
             scan_channels (list of str) : List of analog input channel names to stream
                                         default: ["AIN0", "AIN1", "AIN2"]
-            scan_duration_s (float)     : Duration (in seconds) for streaming.
-            total_scan_rate_Hz (float)  : Total scan rate over all channel in Hz. defaults: 100e3. 
-                                        cf. scan rate per channel = [total_scan_rate_Hz / len(scan_channels)] Hz.
+            duration_s (float)     : Duration (in seconds) for streaming.
+            sampling_rate_Hz (float)  : sampling rate (over all channel) in Hz. defaults: 100e3. 
+                                        cf. scan rate (per channel) = [sampling_rate_Hz / len(scan_channels)] Hz.
             scans_per_read              : Number of scans per channel per eStreamRead.
             (int or 'None')             None for max scans (i.e., stream over scan_duration_s at once)
                                         default: None
@@ -98,25 +106,21 @@ class StreamIn:
         self._scan_channels = scan_channels
         num_channels = len(self._scan_channels)
         self._num_channels = num_channels
-        self._scan_duration_input = float(scan_duration_s)
-        self._total_scan_rate = float(total_scan_rate_Hz)
-        num_total_scans = int(np.ceil(total_scan_rate_Hz*scan_duration_s)) # make it integer
-        scan_duration = num_total_scans/total_scan_rate_Hz # adjust scan duration
+        self._duration_input = float(duration_s)
+        self._sampling_rate = float(sampling_rate_Hz)
+        self._scan_rate = scan_rate_Hz = sampling_rate_Hz/num_channels
+        self._num_samples = num_samples = int(np.ceil(sampling_rate_Hz*duration_s)) # make it integer
+        self._duration = duration = num_samples/sampling_rate_Hz # adjust scan duration
         
         # ensure the last scan contains all channels
-        num_scans_channel = int(np.ceil(float(num_total_scans)/num_channels))
-        num_total_scans = num_scans_channel*num_channels
-        self._num_total_scans = num_total_scans
-        scan_duration = num_total_scans/total_scan_rate_Hz
-        self._scan_duration = scan_duration
-                    
-        scan_rate_channel = num_scans_channel/scan_duration
-        self._scan_rate_per_channel = scan_rate_channel
+        self._num_scans = num_scans = int(np.ceil(float(num_samples)/num_channels))
+        self._duration = duration = num_scans/scan_rate_Hz
+        self._num_samples = num_samples = num_scans*num_channels        
         
-        if scans_per_read_per_channel is None:
-            scans_per_read_per_channel = int(scan_rate_channel*scan_duration_s)
-        self._scans_per_read_per_channel = scans_per_read_per_channel
-        num_reads = int(np.ceil(float(num_scans_channel)/scans_per_read_per_channel))
+        if scans_per_read is None:
+            scans_per_read = int(scan_rate_Hz*duration_s)
+        self._scans_per_read = scans_per_read
+        num_reads = int(np.ceil(float(num_scans)/scans_per_read))
         self._num_reads = num_reads
 
         # trigger configuration
@@ -138,7 +142,7 @@ class StreamIn:
             self._configure_trigger()
         
         # perform stream
-        self._stream()
+        self._stream_in()
 
 
     def _configure(self) -> None:
@@ -146,7 +150,7 @@ class StreamIn:
         Device configuration for streaming
         https://support.labjack.com/docs/3-2-stream-mode-t-series-datasheet#id-3.2StreamMode[T-SeriesDatasheet]-ConfiguringAINforStream
         """
-        print(f">>> Configuring LabJack for streaming...", end="")
+        print(f">>> Configuring LabJack for streaming... ", end="")
         # register config for stream
         config_resister = {
             # Ensure triggered stream is disabled initially.
@@ -224,8 +228,53 @@ class StreamIn:
         print(f"Done. Execution time: {td_exe.total_seconds():.6f} s")
         print()
         
-
-    def _stream(self) -> None:
+    
+    async def _stack_stream_reads(self, 
+                                  ir: int, 
+                                  timestamp_read_return: datetime,
+                                  ret: tuple[list[float], int, int],
+                                  ) -> None:
+        """
+        stack the return of each eStreamRead() to this instance.
+        Intended to be asyncio.queue'd in _stream() method.
+        """
+        a_data = np.array(ret[0]) # stream data read
+        device_scan_backlog = ret[1]
+        ljm_scan_backlog = ret[2]
+        
+        # Count skipped samples (indicated by -9999 values)
+        skipped_samples = np.sum(a_data == -9999.0)
+        self._skipped_samples += skipped_samples
+        
+        # conver skipped samples to np.nan
+        a_data[a_data == -9999.0] = np.nan
+        
+        # add stream data of current eStreamRead
+        self._total_a_data.extend(a_data) 
+        
+        # time that data was returned from eStreamRead
+        self._timestamp_read_return[ir] = timestamp_read_return
+        
+        current_samples = len(a_data)
+        self._samples += current_samples
+        current_scans = int(current_samples / self._num_channels)
+        self._scans += current_scans
+        
+        msg = f"\teStreamRead {ir + 1} out of {self._num_reads} returned at {timestamp_read_return}."
+        msg += f"\n\t\tScans Skipped across channels = {skipped_samples:0.0f}, "
+        msg += f"Scan Backlogs: Device = {device_scan_backlog}, LJM = {ljm_scan_backlog}\n"
+        print(msg, flush=True)
+        
+    def _queue_worker(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break  # signal to exit
+            ir, timestamp_read_return, ret = item
+            asyncio.run(self._stack_stream_reads(ir, timestamp_read_return, ret))
+            self._queue.task_done()
+    
+    async def _run_stream_in(self) -> None:
         """
         Perform the stream reading and store the result in this instance.
         """
@@ -233,15 +282,15 @@ class StreamIn:
         handle = self._handle
 
         # Streaming configuration parameters
-        scansPerRead = self._scans_per_read_per_channel
+        scansPerRead = self._scans_per_read
         NumAddresses = self._num_channels
         aScanList = ljm.namesToAddresses(self._num_channels, self._scan_channels)[0]
-        scanRate = self._scan_rate_per_channel
+        scanRate = self._scan_rate
         numReads = self._num_reads
         
         # Start streaming
         # wait for trigger before streaming if enabled
-        print(f">>> Streaming starting... ", end="")
+        print(f">>> Streaming starting... ", end="", flush=True)
         try:
             ljm.eStreamStart(handle, scansPerRead, NumAddresses, aScanList, scanRate)
         except ljm.LJMError as ljmex:
@@ -249,19 +298,23 @@ class StreamIn:
         except Exception as ex:
             raise LabJackStreamReadError("Non LabJack library-level error") from ex
         
-        print(f"Started.")
+        print(f"Started.", flush=True)
 
         if self._do_trigger:
-            print("\tWaiting for trigger...")
+            print("\tWaiting for trigger...", flush=True)
 
-        total_scans = 0
-        scans_per_channel = 0
-        skipped_total_scans = 0
-        total_a_data = []  # Accumulate data across reads
-        start_time = datetime.now()
-        timestamp_read_returned = [None]*numReads
+        self._samples = 0
+        self._scans = 0
+        self._skipped_samples = 0
+        self._total_a_data = []  # Accumulate data across reads
+        self._timestamp_read_return = [None]*numReads
 
         # Read stream data for the specified number of reads.
+        self._queue = queue.Queue()
+        worker_thread = threading.Thread(target=self._queue_worker, daemon=True)
+        worker_thread.start()
+        
+        start_time = datetime.now()
         ir = 0
         try:
             while ir < numReads:
@@ -269,69 +322,47 @@ class StreamIn:
                 # read stream from LabJack
                 try:
                     ret = ljm.eStreamRead(handle)
-                    current_timestamp_read_end = datetime.now()
+                    timestamp_read_return = datetime.now()
                 except ljm.LJMError as ljmex:
                     # If no scans are returned, continue; otherwise, propagate the error.
                     if ljmex.errorCode == ljm.errorcodes.NO_SCANS_RETURNED:
                         continue
                     raise ljmex
                 
-                a_data = np.array(ret[0]) # stream data read
-                device_scan_backlog = ret[1]
-                ljm_scan_backlog = ret[2]
-                
-                # Count skipped samples (indicated by -9999 values)
-                current_skipped_total_scans = np.sum(a_data == -9999.0)
-                skipped_total_scans += current_skipped_total_scans
-                
-                # conver skipped samples to np.nan
-                a_data[a_data == -9999.0] = np.nan
-                
-                # add stream data of current eStreamRead
-                total_a_data.extend(a_data) 
-                
-                # time that data was returned from eStreamRead
-                timestamp_read_returned[ir] = current_timestamp_read_end 
-                
-                current_total_scans = len(a_data)
-                total_scans += current_total_scans
-                current_scans_per_channel = int(current_total_scans / self._num_channels)
-                scans_per_channel += current_scans_per_channel
-                
-
-                print(f"\teStreamRead {ir + 1} out of {numReads} returned at {current_timestamp_read_end}.")
-                # Print first scan results for each channel.
-                # ain_str = "".join(
-                #     f"{self._scan_channels[j]} = {a_data[j]:0.5f}, " for j in range(self._num_channels)
-                # )
-                # print(f"\t\t1st scan out of {int(current_scans_per_channel)}: {ain_str}")
-                print(f"\t\tScans Skipped across channels = {current_skipped_total_scans:0.0f}, "
-                    f"Scan Backlogs: Device = {device_scan_backlog}, LJM = {ljm_scan_backlog}\n")
+                # stack the return of each eStreamRead() to this instance
+                self._queue.put((ir, timestamp_read_return, ret))
 
                 ir += 1
-                
-            print(f"\t# scans = {total_scans} total, {scans_per_channel}/channel")
-            print(f"\tSkipped scans across channels = {skipped_total_scans:0.0f}\n")
+
         except ljm.LJMError as ljmex:
             raise LabJackStreamReadError("LabJack library-level error") from ljmex
         except Exception as ex:
             raise LabJackStreamReadError("Non LabJack library-level error") from ex
         finally:
             # Stop the stream
-            print(">>> Stopping Stream.... ", end="")
+            print(">>> Stopping Stream...\n", flush=True)
             try:
                 ljm.eStreamStop(handle)
             except ljm.LJMError as ljmex:
                 raise LabJackStreamReadError("LabJack library-level error") from ljmex
             except Exception as ex:
                 raise LabJackStreamReadError("Non LabJack library-level error") from ex
-            print("Done.\n")
+            print("<<< Stream stopped.\n", flush=True)
+            
+        # wait until data stacking is done
+        self._queue.join()
+        self._queue.put(None)  # signal to stop thread
+        worker_thread.join()
+        
+        msg = f"\t# scans = {self._samples} total, {self._scans}/channel"
+        msg += f"\tSkipped scans across channels = {self._skipped_samples:0.0f}\n"
+        print(msg, flush=True)
 
         end_time = datetime.now()
         elapsed = (end_time - start_time).total_seconds()
 
         # Process raw streamed data into channel-specific data.
-        ch_data = LabJackaData2chData(total_a_data, self._num_channels, scanRate)
+        ch_data = LabJackaData2chData(self._total_a_data, self._num_channels, scanRate)
         records = {}
         for inx, a_scan_list_name in enumerate(self._scan_channels):
             ch_data_channel = deepcopy(ch_data[inx])
@@ -340,16 +371,26 @@ class StreamIn:
         
         # store result to this instance    
         self._records = records
-        self._skipped_total_scans = skipped_total_scans
-        self._total_a_data = total_a_data
+        
+        
+    def _stream_in(self):
+        """Synchronous method that blocks until async stream finishes."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._run_stream_in())
+        else:
+            future = asyncio.run_coroutine_threadsafe(self._run_stream_in(), loop)
+            future.result()
+        
         
     def __str__(self) -> str:
         msg = ""
         msg += "Labjack streamed read data:"
         msg += f"\n\trecords = \n"
         msg += indent(pformat(self.records), "\t\t")
-        msg += f"\n\tduration = {self.scan_duration_s} s"
-        msg += f"\n\tsampling rate = {self.total_scan_rate_Hz} total samples/s, {self.scan_rate_per_channel_Hz} samples/s/channel"
+        msg += f"\n\tduration = {self.duration_s} s"
+        msg += f"\n\tsampling rate = {self.sampling_rate_Hz} total samples/s, {self.scan_rate_Hz} samples/s/channel"
         msg += f"\n\ttriggered = {self.do_trigger}"
         if self._do_trigger:
             msg += f"\n\t\ttrigger channel = {self.trigger_channel}"
@@ -364,11 +405,21 @@ if __name__ == "__main__":
         device_identifier='192.168.1.128',
     )
 
-    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, scans_per_read=50000)
+    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10)
+    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, scans_per_read=50000)
+    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 5, sampling_rate_Hz=50e3, scans_per_read=50000)
+    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 5, sampling_rate_Hz=50e3, scans_per_read=25000)
     
     print(stream_in)
     print()
-    total_nans = np.sum([(value['V'] == np.nan).sum() for value in stream_in.records.values()])
+    total_nans = np.sum([np.isnan(value['V']).sum() for value in stream_in.records.values()])
     print(f"Recounting skipped total samples = {total_nans}")
     
     del lj_device
+    
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    for channel, record in stream_in.records.items():
+        ax.plot(record["t"], record["V"], label=channel)
+    ax.legend()
+    plt.show()

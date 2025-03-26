@@ -260,13 +260,14 @@ class LabJackDevice:
             raise LabJackRegisterConfigurationError("LabJack library-level error") from ljmex
         except Exception as ex:
             raise LabJackRegisterConfigurationError("Non LabJack library-level error") from ex
-        
+    
+    # streaming input
     def stream_in(
             self,
             scan_channels: list[str] = ["AIN0", "AIN1", "AIN2"],
-            scan_duration_s: int = 1,
+            duration_s: int = 1,
             *,
-            total_scan_rate_Hz: float = 100e3,
+            sampling_rate_Hz: float = 100e3,
             scans_per_read: int | None = None,
             do_trigger: bool =False,
             trigger_channel : str = "DIO0",
@@ -297,8 +298,8 @@ class LabJackDevice:
         # check connection
         self._check_connection()
         from _stream_in import StreamIn
-        return StreamIn(self, scan_channels, scan_duration_s, \
-                total_scan_rate_Hz=total_scan_rate_Hz, scans_per_read_per_channel=scans_per_read, \
+        return StreamIn(self, scan_channels, duration_s, \
+                sampling_rate_Hz=sampling_rate_Hz, scans_per_read=scans_per_read, \
                 do_trigger=do_trigger, trigger_channel=trigger_channel, trigger_mode=trigger_mode, trigger_edge=trigger_edge)
 
 
