@@ -46,22 +46,53 @@ class LabJackTriggerEdgeEnum(Enum):
     """
     Falling = 0
     Rising = 1
+    
+class LabJackStreamReturnEnum(Enum):
+    """Enum for LabJack trigger edge options
+    refer to https://support.labjack.com/docs/ljm-stream-configs#LJMStreamConfigs-LJM_STREAM_SCANS_RETURN
+    """
+    ljm.constants.STREAM_SCANS_RETURN_ALL = 1
+    ljm.constants.STREAM_SCANS_RETURN_ALL_OR_NONE = 2
+    
 
 
 # Errors
+# # general
 class LabJackError(Exception):
     """Exception for general LabJack errors"""
     pass
 
-
+# # connection
 class LabJackConnectionError(LabJackError):
     """Exception for errors while establishing connection to LabJack"""
     pass
 
-
-class LabJackStreamingError(LabJackError):
-    """Exception for errors while facilitating streaming (preperation, excecution, termiation)"""
+class LabJackNoConnectionError(LabJackError):
+    """Exception for errors when no connection to LabJack has been established."""
     pass
+class LabJackDisconnectionError(LabJackError):
+    """Exception for errors while closing connection to LabJack"""
+    pass
+
+# configuration
+class LabJackLibraryConfigurationError(LabJackError):
+    """Exception for errors while configuring `ljm` library"""
+    pass
+
+class LabJackRegisterConfigurationError(LabJackError):
+    """Exception for errors while configuring LabJack device register"""
+    pass
+
+# stream read
+# class LabJackStreamReadConfigurationError(LabJackError):
+#     """Exception for errors while configuring labjack or library for stream read"""
+#     pass
+
+class LabJackStreamReadError(LabJackError):
+    """Exception for errors while stream read"""
+    pass
+
+
 
 
 # data handling
