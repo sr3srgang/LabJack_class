@@ -1,6 +1,9 @@
 from labjack import ljm
 from _ljm_aux import *
 from datetime import datetime
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from _stream_in import StreamIn
 
 class LabJackDevice:
     """
@@ -69,34 +72,30 @@ class LabJackDevice:
         """
         print(">>> Connecting to LabJack... ", end="")
         
+        
+        
+        # Open device (using names of enums)
         try:
-            # Open device (using names of enums)
             start = datetime.now()
             self._handle = ljm.openS(self._device_type.name,
                                     self._connection_type.name,
                                     self._device_identifier)
             end = datetime.now()
-            td_exe = end - start
-            
-            # Get device info and store it
-            # https://support.labjack.com/docs/gethandleinfo-ljm-user-s-guide
-            info = ljm.getHandleInfo(self._handle)
-            self._serial_number = info[2]
-            self._IP_address = ljm.numberToIP(info[3])
-            self._port = info[4],
-            self._max_bytes_per_MB = info[5]
-            # self._device_info = {
-            #     'deviceType': self._device_type,  # already an enum
-            #     'ConnectionType': self._connection_type,
-            #     'SerialNumber': info[2],
-            #     'IPAddress': ljm.numberToIP(info[3]),
-            #     'Port': info[4],
-            #     'MaxBytesPerMB': info[5]
-            # }
         except ljm.LJMError as ljmex:
             raise LabJackConnectionError("LabJack library-level error") from ljmex
         except Exception as ex:
             raise LabJackConnectionError("Non LabJack library-level error") from ex
+            
+        td_exe = end - start
+        
+        # Get device info and store it
+        # https://support.labjack.com/docs/gethandleinfo-ljm-user-s-guide
+        info = ljm.getHandleInfo(self._handle) # cf. it does not initiate communications with the device
+        self._serial_number = info[2]
+        self._IP_address = ljm.numberToIP(info[3])
+        self._port = info[4],
+        self._max_bytes_per_MB = info[5]
+        
         
         print(f"Done. Execution time: {td_exe.total_seconds():.6f} s")
         
@@ -262,9 +261,7 @@ class LabJackDevice:
         except Exception as ex:
             raise LabJackRegisterConfigurationError("Non LabJack library-level error") from ex
         
-
-    
-    def stream_read(
+    def stream_in(
             self,
             scan_channels: list[str] = ["AIN0", "AIN1", "AIN2"],
             scan_duration_s: int = 1,
@@ -275,7 +272,7 @@ class LabJackDevice:
             trigger_channel : str = "DIO0",
             trigger_mode: LabJackTriggerModeEnum = LabJackTriggerModeEnum.ConditionalReset,
             trigger_edge: LabJackTriggerEdgeEnum = LabJackTriggerEdgeEnum.Rising,
-        ) -> "LabJackDevice.StreamRead":
+        ) -> 'StreamIn':
         """
         configure and initiate (triggered) streaming and return a LabJackDevice.Stream object that contains the result.
         
@@ -299,9 +296,8 @@ class LabJackDevice:
         """
         # check connection
         self._check_connection()
-        
-        from _steam_read import StreamRead
-        return StreamRead(self, scan_channels, scan_duration_s, \
+        from _stream_in import StreamIn
+        return StreamIn(self, scan_channels, scan_duration_s, \
                 total_scan_rate_Hz=total_scan_rate_Hz, scans_per_read_per_channel=scans_per_read, \
                 do_trigger=do_trigger, trigger_channel=trigger_channel, trigger_mode=trigger_mode, trigger_edge=trigger_edge)
 

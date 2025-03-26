@@ -1,16 +1,19 @@
 from labjack_device import LabJackDevice
 from labjack import ljm
 from _ljm_aux import *
+
+import asyncio
+
 import numpy as np
 from datetime import datetime
 from pprint import pprint, pformat
 from copy import deepcopy
 from textwrap import indent
 
-class StreamRead:
+class StreamIn:
     """
     Class to take (possibly triggered) stream measurement and store the result.
-    Intended to be instantiated and returned by LabJackDevice.stream() method.
+    Intended to be instantiated and returned by LabJackDevice.stream_in() method.
 
     Example usage:
         with LabJackDevice(device_identifier='192.168.1.120') as lj:
@@ -37,7 +40,7 @@ class StreamRead:
     @property
     def trigger_edge(self): return self._trigger_edge
     @property
-    def trigger_timeout_s(self): return self._trigger_timeout_s
+    def trigger_timeout_s(self): return self._trigger_timeout
     # #derived 
     @property
     def scan_duration_s(self): return self._scan_duration
@@ -238,7 +241,7 @@ class StreamRead:
         
         # Start streaming
         # wait for trigger before streaming if enabled
-        print(f">>> Streaming starting...", end="")
+        print(f">>> Streaming starting... ", end="")
         try:
             ljm.eStreamStart(handle, scansPerRead, NumAddresses, aScanList, scanRate)
         except ljm.LJMError as ljmex:
@@ -254,7 +257,7 @@ class StreamRead:
         total_scans = 0
         scans_per_channel = 0
         skipped_total_scans = 0
-        total_data = []  # Accumulate data across reads
+        total_a_data = []  # Accumulate data across reads
         start_time = datetime.now()
         timestamp_read_returned = [None]*numReads
 
@@ -273,27 +276,27 @@ class StreamRead:
                         continue
                     raise ljmex
                 
-                a_data = ret[0] # stream data read
+                a_data = np.array(ret[0]) # stream data read
                 device_scan_backlog = ret[1]
                 ljm_scan_backlog = ret[2]
                 
                 # Count skipped samples (indicated by -9999 values)
-                current_skipped_total_scans = a_data.count(-9999.0)
+                current_skipped_total_scans = np.sum(a_data == -9999.0)
                 skipped_total_scans += current_skipped_total_scans
                 
                 # conver skipped samples to np.nan
-                a_data[a_data == -9999] = np.nan
+                a_data[a_data == -9999.0] = np.nan
                 
                 # add stream data of current eStreamRead
-                total_data.extend(a_data) 
+                total_a_data.extend(a_data) 
                 
                 # time that data was returned from eStreamRead
                 timestamp_read_returned[ir] = current_timestamp_read_end 
                 
                 current_total_scans = len(a_data)
                 total_scans += current_total_scans
-                current_scans_per_channel = current_total_scans / self._num_channels
-                scans_per_channel += current_total_scans
+                current_scans_per_channel = int(current_total_scans / self._num_channels)
+                scans_per_channel += current_scans_per_channel
                 
 
                 print(f"\teStreamRead {ir + 1} out of {numReads} returned at {current_timestamp_read_end}.")
@@ -307,7 +310,7 @@ class StreamRead:
 
                 ir += 1
                 
-            print(f"\tTotal scans = {total_scans}")
+            print(f"\t# scans = {total_scans} total, {scans_per_channel}/channel")
             print(f"\tSkipped scans across channels = {skipped_total_scans:0.0f}\n")
         except ljm.LJMError as ljmex:
             raise LabJackStreamReadError("LabJack library-level error") from ljmex
@@ -315,7 +318,7 @@ class StreamRead:
             raise LabJackStreamReadError("Non LabJack library-level error") from ex
         finally:
             # Stop the stream
-            print(">>> Stopping Stream....", end="")
+            print(">>> Stopping Stream.... ", end="")
             try:
                 ljm.eStreamStop(handle)
             except ljm.LJMError as ljmex:
@@ -328,7 +331,7 @@ class StreamRead:
         elapsed = (end_time - start_time).total_seconds()
 
         # Process raw streamed data into channel-specific data.
-        ch_data = LabJackaData2chData(total_data, self._num_channels, scanRate)
+        ch_data = LabJackaData2chData(total_a_data, self._num_channels, scanRate)
         records = {}
         for inx, a_scan_list_name in enumerate(self._scan_channels):
             ch_data_channel = deepcopy(ch_data[inx])
@@ -338,6 +341,7 @@ class StreamRead:
         # store result to this instance    
         self._records = records
         self._skipped_total_scans = skipped_total_scans
+        self._total_a_data = total_a_data
         
     def __str__(self) -> str:
         msg = ""
@@ -360,9 +364,11 @@ if __name__ == "__main__":
         device_identifier='192.168.1.128',
     )
 
-    streamRead = lj_device.stream_read(["AIN0", "AIN1"], 1)
+    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, scans_per_read=50000)
     
-    print(streamRead)
+    print(stream_in)
     print()
+    total_nans = np.sum([(value['V'] == np.nan).sum() for value in stream_in.records.values()])
+    print(f"Recounting skipped total samples = {total_nans}")
     
     del lj_device
