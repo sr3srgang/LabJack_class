@@ -11,6 +11,7 @@ from datetime import datetime
 from pprint import pprint, pformat
 from copy import deepcopy
 from textwrap import indent
+import warnings
 
 class StreamIn:
     """
@@ -54,6 +55,7 @@ class StreamIn:
     def num_samples(self): return self._num_samples
     @property
     def num_scans(self): return self._num_scans
+    _records = None
     @property
     def records(self): return self._records
     @property
@@ -142,6 +144,7 @@ class StreamIn:
             self._configure_trigger()
         
         # perform stream
+        # self._records_ready = threading.Event()  # 🔹 marks readiness of stream result
         self._stream_in()
 
 
@@ -167,7 +170,18 @@ class StreamIn:
         }
         
         start = datetime.now()
-        self._device.configure_register(**config_resister)
+        # self._device.configure_register(**config_resister)
+        try:
+            self._device.configure_register(**config_resister)
+        except LabJackRegisterConfigurationError as ex:
+            # op stream if stream was active
+            # labjack.ljm.ljm.LJMError: LJM library error code 2605 STREAM_IS_ACTIVE
+            if ex.__cause__ and \
+                isinstance(ex.__cause__, ljm.LJMError) and \
+                ex.__cause__.errorCode == 2605:
+                warnings.warn("Stream was active. Attempting to stop stream... ", category='UserWarning')
+                ljm.eStreamStop(self._handle)
+                warnings.warn("Stream stopped.", category='UserWarning')
         end = datetime.now()
         td_exe = end - start
         print(f"Done. Execution time: {td_exe.total_seconds():.6f} s")
@@ -229,7 +243,7 @@ class StreamIn:
         print()
         
     
-    async def _stack_stream_reads(self, 
+    def _stack_stream_reads(self, 
                                   ir: int, 
                                   timestamp_read_return: datetime,
                                   ret: tuple[list[float], int, int],
@@ -265,13 +279,21 @@ class StreamIn:
         msg += f"Scan Backlogs: Device = {device_scan_backlog}, LJM = {ljm_scan_backlog}\n"
         print(msg, flush=True)
         
+    # def _queue_worker(self) -> None:
+    #     while True:
+    #         item = self._queue.get()
+    #         if item is None:
+    #             break  # signal to exit
+    #         ir, timestamp_read_return, ret = item
+    #         asyncio.run(self._stack_stream_reads(ir, timestamp_read_return, ret))
+    #         self._queue.task_done()
     def _queue_worker(self) -> None:
         while True:
             item = self._queue.get()
             if item is None:
                 break  # signal to exit
             ir, timestamp_read_return, ret = item
-            asyncio.run(self._stack_stream_reads(ir, timestamp_read_return, ret))
+            self._stack_stream_reads(ir, timestamp_read_return, ret)
             self._queue.task_done()
     
     async def _run_stream_in(self) -> None:
@@ -280,6 +302,19 @@ class StreamIn:
         """
         
         handle = self._handle
+        
+        # # stop streaming if already active
+        # try:
+        #     # is_streaming = bool(ljm.eReadName(handle, "STREAM_RUNNING"))
+        #     is_streaming = bool(ljm.eReadAddress(handle, 44990, ljm.constants.UINT32))
+        # except ljm.LJMError as ljmex:
+        #     raise LabJackStreamReadError("LabJack library-level error") from ljmex
+        # except Exception as ex:
+        #     raise LabJackStreamReadError("Non LabJack library-level error") from ex
+        # if is_streaming:
+        #     warnings.warn("Stream was active. Attempting to stop stream... ", category='UserWarning')
+        #     ljm.eStreamStop(self._handle)
+        #     warnings.warn("Stream stopped.", category='UserWarning')
 
         # Streaming configuration parameters
         scansPerRead = self._scans_per_read
@@ -291,12 +326,29 @@ class StreamIn:
         # Start streaming
         # wait for trigger before streaming if enabled
         print(f">>> Streaming starting... ", end="", flush=True)
+        stream_started = False
         try:
             ljm.eStreamStart(handle, scansPerRead, NumAddresses, aScanList, scanRate)
+            stream_started = True  # set after successful eStreamStart()
         except ljm.LJMError as ljmex:
             raise LabJackStreamReadError("LabJack library-level error") from ljmex
         except Exception as ex:
             raise LabJackStreamReadError("Non LabJack library-level error") from ex
+        finally:
+            if stream_started is not True:
+                # attempt to stop stream in case the device started streaming
+                print("Stream failed to start. Attempting to stop stream... ", end="", flush=True)
+                try:
+                    ljm.eStreamStop(handle)
+                except ljm.LJMError as ljmex:
+                    print("Failed.", flush=True)
+                    raise LabJackStreamReadError("LabJack library-level error") from ljmex
+                except Exception as ex:
+                    print("Failed.", flush=True)
+                    raise LabJackStreamReadError("Non LabJack library-level error") from ex
+                else:
+                    print("Done.", flush=True)
+                    
         
         print(f"Started.", flush=True)
 
@@ -350,9 +402,8 @@ class StreamIn:
             print("<<< Stream stopped.\n", flush=True)
             
         # wait until data stacking is done
-        self._queue.join()
         self._queue.put(None)  # signal to stop thread
-        worker_thread.join()
+        worker_thread.join()   # wait for worker to clean up
         
         msg = f"\t# scans = {self._samples} total, {self._scans}/channel"
         msg += f"\tSkipped scans across channels = {self._skipped_samples:0.0f}\n"
@@ -371,20 +422,58 @@ class StreamIn:
         
         # store result to this instance    
         self._records = records
+        # self._records_ready.set()  # signal that records are ready
         
         
     def _stream_in(self):
-        """Synchronous method that blocks until async stream finishes."""
+        # """Synchronous method that blocks until async stream finishes."""
+        # try:
+        #     loop = asyncio.get_running_loop()
+        # except RuntimeError:
+        #     asyncio.run(self._run_stream_in())
+        # else:
+        #     # In Jupyter or any already-running loop
+        #     done_event = threading.Event()
+        #     result_holder = {}
+        #     def run_and_signal():
+        #         async def wrapper():
+        #             await self._run_stream_in()
+        #             done_event.set()
+        #         asyncio.ensure_future(wrapper())
+        #     loop.call_soon_threadsafe(run_and_signal)
+
+        """Synchronous method that blocks until streaming finishes.
+        Works in both scripts and interactive (Jupyter/async) environments.
+        """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            # No running loop: script mode
             asyncio.run(self._run_stream_in())
         else:
-            future = asyncio.run_coroutine_threadsafe(self._run_stream_in(), loop)
-            future.result()
-        
+            # Running loop (Jupyter, async app): use threading.Event to block
+            done_event = threading.Event()
+
+            def run_and_signal():
+                async def wrapper():
+                    await self._run_stream_in()
+                    done_event.set()
+                asyncio.ensure_future(wrapper())
+
+            loop.call_soon_threadsafe(run_and_signal)
+            # done_event.wait()
+            # timeout = float(max([10, self._duration*1.5]))
+            # if not done_event.wait(timeout=timeout):  # wait max 60s
+            #     raise TimeoutError(f"StreamIn._stream_in() did not complete within {timeout} seconds.")
+    
+    # async def _wait_for_records(self):
+    #     while self._records is None:
+    #         pass     
         
     def __str__(self) -> str:
+        # if self._records is None:
+        #     warnings.warn("StreamIn object is not yet ready. Waiting for records...", category=UserWarning)
+        #     self._records_ready.wait()
         msg = ""
         msg += "Labjack streamed read data:"
         msg += f"\n\trecords = \n"
@@ -405,10 +494,15 @@ if __name__ == "__main__":
         device_identifier='192.168.1.128',
     )
 
-    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10)
-    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, scans_per_read=50000)
+    # # works
     # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 5, sampling_rate_Hz=50e3, scans_per_read=50000)
-    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 5, sampling_rate_Hz=50e3, scans_per_read=25000)
+    # # works
+    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, sampling_rate_Hz=50e3)
+    # works
+    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 1, sampling_rate_Hz=50e3)
+    # # too high sampling rate
+    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, sampling_rate_Hz=100e3, scans_per_read=50000)
+    # # so sampling rate of 50e3 or below seems a safe choice.
     
     print(stream_in)
     print()
@@ -419,7 +513,13 @@ if __name__ == "__main__":
     
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
+    n_skip_head = 2000
     for channel, record in stream_in.records.items():
-        ax.plot(record["t"], record["V"], label=channel)
+        ax.plot(record["t"][n_skip_head:], record["V"][n_skip_head:], label=channel)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Voltage (V)")
+    ax.set_title("LabJack Stream In")
+    ax.grid(True)
     ax.legend()
-    plt.show()
+    
+    fig.savefig("stream_in.png")

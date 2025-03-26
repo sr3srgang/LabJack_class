@@ -1,5 +1,5 @@
 # user gitignore
-
+*.png
 
 # gitignore for vscode as of 2024/12/05
 # https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
