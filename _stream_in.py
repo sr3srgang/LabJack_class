@@ -491,7 +491,7 @@ if __name__ == "__main__":
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
-        device_identifier='192.168.1.128',
+        device_identifier='192.168.1.92',
     )
 
     # # works
@@ -499,10 +499,13 @@ if __name__ == "__main__":
     # # works
     # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, sampling_rate_Hz=50e3)
     # works
-    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 1, sampling_rate_Hz=50e3)
+    # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 1, sampling_rate_Hz=50e3)
     # # too high sampling rate
     # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 10, sampling_rate_Hz=100e3, scans_per_read=50000)
     # # so sampling rate of 50e3 or below seems a safe choice.
+    
+    # triggered stream
+    stream_in = lj_device.stream_in(["AIN0", "AIN1"], 1, sampling_rate_Hz=50e3, do_trigger=True)
     
     print(stream_in)
     print()

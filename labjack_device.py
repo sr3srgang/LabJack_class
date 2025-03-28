@@ -187,16 +187,12 @@ class LabJackDevice:
                 raise ValueError(f"LabJack configuration value should be number or string\n\tInput configuration: {key} = {value}")
         
         try:
-            keys_number = []; values_number = []
             for key, value in kwargs.items():
                 if isinstance(value, str):
                     # configure string values
                     ljm.writeLibraryConfigStringS(key, value)
                 else:
-                    keys_number.append(key); values_number.append(value)
-            # configure number values
-            N_config_number = len(keys_number)
-            ljm.writeLibraryConfigS(handle, N_config_number, keys_number, values_number)
+                    ljm.writeLibraryConfigS(key, value)
         except ljm.LJMError as ljmex:
             raise LabJackLibraryConfigurationError("LabJack library-level error") from ljmex
         except Exception as ex:
@@ -307,7 +303,7 @@ if __name__ == "__main__":
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
-        device_identifier='192.168.1.128',
+        device_identifier='192.168.1.92',
     )
     
     del lj_device
