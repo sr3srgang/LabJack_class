@@ -299,6 +299,12 @@ class StreamIn:
     async def _run_stream_in(self) -> None:
         """
         Perform the stream reading and store the result in this instance.
+        
+        ljm methods used:
+        - https://support.labjack.com/docs/namestoaddresses-ljm-user-s-guide
+        - https://support.labjack.com/docs/estreamstart-ljm-user-s-guide
+        - https://support.labjack.com/docs/estreamread-ljm-user-s-guide
+        - https://support.labjack.com/docs/estreamstop-ljm-user-s-guide
         """
         
         handle = self._handle
@@ -353,7 +359,8 @@ class StreamIn:
         print(f"Started.", flush=True)
 
         if self._do_trigger:
-            print("\tWaiting for trigger...", flush=True)
+            print("\tWaiting for trigger..."
+                  "\n\tLabJack will start to stream once triggered (without letting you know).", flush=True)
 
         self._samples = 0
         self._scans = 0
@@ -486,13 +493,17 @@ class StreamIn:
             msg += f"\n\t\ttrigger mode = {self.trigger_mode.name}"
             msg += f"\n\t\ttrigger edge = {self.trigger_edge.name}"
         return msg
-        
+
+# example usage  
 if __name__ == "__main__":
+    # connect to LabJack
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
         device_identifier='192.168.1.92',
     )
+
+    # stream in
 
     # # works
     # stream_in = lj_device.stream_in(["AIN0", "AIN1"], 5, sampling_rate_Hz=50e3, scans_per_read=50000)
@@ -507,13 +518,17 @@ if __name__ == "__main__":
     # triggered stream
     stream_in = lj_device.stream_in(["AIN0", "AIN1"], 1, sampling_rate_Hz=50e3, do_trigger=True)
     
+    # access to the result and stream settings
     print(stream_in)
     print()
     total_nans = np.sum([np.isnan(value['V']).sum() for value in stream_in.records.values()])
     print(f"Recounting skipped total samples = {total_nans}")
     
+    # disconnect from LabJack
     del lj_device
     
+    
+    # (Optional) draw result
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
     n_skip_head = 2000
