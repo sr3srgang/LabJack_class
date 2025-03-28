@@ -25,6 +25,8 @@ class LabJackDevice:
             # process stream_data ...
     """
     
+    # >>>>> class setting >>>>>
+    
     # Read-only properties
     @property
     def device_type(self): return self._device_type
@@ -64,7 +66,46 @@ class LabJackDevice:
         print()
         print(self)
         print()
+    
+    def __enter__(self) -> None:
+        """
+        Support for context manager (i.e., "with" keyword).
+        """
+        self._connect()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        """
+        Ensure disconnection when used as a context manager (i.e., "with" keyword).
+        Disconnect from the LabJack device if connected when an object is about to be disposed.
+        """
+        try: 
+            self._check_connection()
+            self._disconnect()
+        except LabJackNoConnectionError:
+            pass
         
+    def __del__(self) -> None:
+        """
+        destructor
+        Disconnect from the LabJack device if connected when an object is about to be disposed.    
+        """
+        self.__exit__(None, None, None)
+        
+    def __str__(self) -> str:
+        msg = "LabJack device instance:"
+        msg += f"\n\tDevice type: {self._device_type.name}"
+        msg += f"\n\tConnection type: {self._connection_type.name}"
+        msg += f"\n\tIP address: {self._IP_address}, Port: {self._port}"
+        msg += f"\n\tSerial number: {self._serial_number}"
+        msg += f"\n\tMax bytes per MB: {self._max_bytes_per_MB}"
+        return msg
+    
+    # <<<<< class setting <<<<<
+     
+        
+        
+    # >>>>> LabJack connection >>>>>
     
     def _connect(self) -> None:
         """
@@ -130,48 +171,28 @@ class LabJackDevice:
 
         print(f"Done. Execution time: {td_exe.total_seconds():.6f} s")
         
-    def __enter__(self) -> None:
-        """
-        Support for context manager (i.e., "with" keyword).
-        """
-        self._connect()
-        return self
+    # <<<<< LabJack connection <<<<<
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        """
-        Ensure disconnection when used as a context manager (i.e., "with" keyword).
-        Disconnect from the LabJack device if connected when an object is about to be disposed.
-        """
-        try: 
-            self._check_connection()
-            self._disconnect()
-        except LabJackNoConnectionError:
-            pass
-        
-    def __del__(self) -> None:
-        """
-        destructor
-        Disconnect from the LabJack device if connected when an object is about to be disposed.    
-        """
-        self.__exit__(None, None, None)
-        
-    def __str__(self) -> str:
-        msg = "LabJack device instance:"
-        msg += f"\n\tDevice type: {self._device_type.name}"
-        msg += f"\n\tConnection type: {self._connection_type.name}"
-        msg += f"\n\tIP address: {self._IP_address}, Port: {self._port}"
-        msg += f"\n\tSerial number: {self._serial_number}"
-        msg += f"\n\tMax bytes per MB: {self._max_bytes_per_MB}"
-        return msg
-        
+    
+    
+    # >>>>> LabJack configuration >>>>>
+    
     def configure_library(self, **kwargs: int | float | str ) -> None:
         """
         Configure `ljm` library.
-        https://support.labjack.com/docs/ljm-library-configuration-functions
-
+        
+        Refer to https://support.labjack.com/docs/ljm-library-configuration-functions for the list of the configurations.
+        
         Args: keyward arguments
-                - key                           : configuration name
-                - value (int or float or str)   : corresponding value to set
+        - key                           : configuration name
+        - value (int or float or str)   : corresponding value to set
+        
+        cf. From the link: "Whenever LJM is started up, it is loaded with default values, so any desired configurations must be applied each time LJM is started."
+            Refer to `./ljm_startup_configs.json` file and https://support.labjack.com/docs/ljm-startup-configs for the default configuration.
+                
+        ljm methods used: 
+        - https://support.labjack.com/docs/writelibraryconfigs-ljm-user-s-guide
+        - https://support.labjack.com/docs/writelibraryconfigstrings-ljm-user-s-guide
         """
         # check connection
         self._check_connection()
@@ -204,23 +225,45 @@ class LabJackDevice:
                   **kwargs: int | float | str):
         """
         Configure LabJack device register
-        Refer to https://support.labjack.com/docs/t-series-datasheet for the list of the configurations
+        Refer to the following links for the list of the configurations.
+        - https://support.labjack.com/docs/t-series-datasheet
+        - https://support.labjack.com/docs/3-1-modbus-map-t-series-datasheet
+        - https://support.labjack.com/docs/3-1-2-printable-modbus-map
         
         Args: keyward arguments
-                - key                           : configuration name
-                - value (int or float or str)   : corresponding value to set
+        - key                           : configuration name
+        - value (int or float or str)   : corresponding value to set
         
         Useful examples:
         - AIN<channel number or _ALL>_NEGATIVE_CH = ljm.constants.GND
-            Set specified or all the analog channels to be single-ended (i.e., reading referenced to the ground)
-            https://support.labjack.com/docs/14-0-analog-inputs-t-series-datasheet#id-14.0AnalogInputs[T-SeriesDatasheet]-Single-endedorDifferential-T7Only
-            e.g., AIN0_NEGATIVE_CH = ljm.constants.GND
-                  AIN_ALL_NEGATIVE_CH = ljm.constants.GND
+          Set specified or all the analog channels to be single-ended (i.e., reading referenced to the ground)
+          https://support.labjack.com/docs/14-0-analog-inputs-t-series-datasheet#id-14.0AnalogInputs[T-SeriesDatasheet]-Single-endedorDifferential-T7Only
+          
+          Examples:
+            - AIN0_NEGATIVE_CH = ljm.constants.GND
+            - AIN_ALL_NEGATIVE_CH = ljm.constants.GND
         
         - AIN<channel number or _ALL>_RANGE = <voltage in V>
-            Set specified or all the channel to have +-<voltage in V> as the voltage range 
-            https://support.labjack.com/docs/14-0-analog-inputs-t-series-datasheet#id-14.0AnalogInputs[T-SeriesDatasheet]-Range/Gain-T7/T8
-            e.g., AIN_ALL_NEGATIVE_CH = 10.0 (cf. LabJack default value)
+          Set specified or all the channel to have +-<voltage in V> as the voltage range 
+          https://support.labjack.com/docs/14-0-analog-inputs-t-series-datasheet#id-14.0AnalogInputs[T-SeriesDatasheet]-Range/Gain-T7/T8
+          e.g., AIN_ALL_NEGATIVE_CH = 10.0 (cf. LabJack default value)
+            
+        cf. Unlike `ljm` library configuration, the Modbus register values are not reset from power cycling or new connections
+            Relevant references:
+        - Factory & Power-up defaults configuration through Kippling app
+            https://support.labjack.com/docs/general-configuration#GeneralConfiguration-Power-UpDefaults
+        - I/O configuration through programing
+            https://support.labjack.com/docs/24-0-io-config-_default-t-series-datasheet
+        - Factory default values (search keyword: `power-up default`):
+            https://support.labjack.com/docs/15-0-dac-t-series-datasheet#id-15.0DAC[T-SeriesDatasheet]-Power-upDefaults
+            https://support.labjack.com/docs/14-0-analog-inputs-t-series-datasheet (default values scattered around...)
+            https://support.labjack.com/docs/13-0-digital-i-o-t-series-datasheet#id-13.0DigitalI/O[T-SeriesDatasheet]-Power-upDefaults
+            https://support.labjack.com/docs/configuring-reading-a-counter
+        
+        ljm methods used:
+        - https://support.labjack.com/docs/general-configuration
+        - https://support.labjack.com/docs/ewritenames-ljm-user-s-guide
+        - https://support.labjack.com/docs/ewritenamestring-ljm-user-s-guide
         """
         # check connection
         self._check_connection()
@@ -257,6 +300,17 @@ class LabJackDevice:
         except Exception as ex:
             raise LabJackRegisterConfigurationError("Non LabJack library-level error") from ex
     
+    # <<<<< LabJack configuration <<<<<
+    
+    
+    
+    
+    # >>>>>>> LabJack operation >>>>>>>
+    # to be implemented in a separate protected file (i.e., in ./_XXX.py; class defined in the file does not need to be protected)
+
+    # >>>>> stream in >>>>>
+    # implemented in ./_stream_in.py
+
     # streaming input
     def stream_in(
             self,
@@ -297,14 +351,28 @@ class LabJackDevice:
         return StreamIn(self, scan_channels, duration_s, \
                 sampling_rate_Hz=sampling_rate_Hz, scans_per_read=scans_per_read, \
                 do_trigger=do_trigger, trigger_channel=trigger_channel, trigger_mode=trigger_mode, trigger_edge=trigger_edge)
+    
+    # <<<<< stream in <<<<<
+        
+    # <<<<<<< LabJack operation <<<<<<<
 
-
+# example usage
 if __name__ == "__main__":
+    # connect to LabJack
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
         device_identifier='192.168.1.92',
     )
     
+    # # (Optional) configure `ljm` library
+    # # If not run, default configuration will be used. Refer to the docstring of LabJackDevice.configure_library() method.
+    # lj_device.configure_library()
+    
+    # (Optional) configure LabJack device register
+    # Better to run as the values will be the ones last used or power-up defaults.
+    # Refer to the docstring LabJackDevice.configure_register() method.
+    lj_device.configure_register(AIN_ALL_NEGATIVE_CH=ljm.constants.GND, AIN_ALL_RANGE=10)
+    
+    # disconnect from LabJack
     del lj_device
-
