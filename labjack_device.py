@@ -134,7 +134,7 @@ class LabJackDevice:
         info = ljm.getHandleInfo(self._handle) # cf. it does not initiate communications with the device
         self._serial_number = info[2]
         self._IP_address = ljm.numberToIP(info[3])
-        self._port = info[4],
+        self._port = info[4]
         self._max_bytes_per_MB = info[5]
         
         
@@ -362,7 +362,7 @@ if __name__ == "__main__":
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
-        device_identifier='192.168.1.92',
+        device_identifier='192.168.1.120',
     )
     
     # # (Optional) configure `ljm` library
@@ -375,4 +375,5 @@ if __name__ == "__main__":
     lj_device.configure_register(AIN_ALL_NEGATIVE_CH=ljm.constants.GND, AIN_ALL_RANGE=10)
     
     # disconnect from LabJack
+
     del lj_device
