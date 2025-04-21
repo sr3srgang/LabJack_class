@@ -1,9 +1,9 @@
 from labjack import ljm
-from _ljm_aux import *
+from ._ljm_aux import *
 from datetime import datetime
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from _stream_in import StreamIn
+    from ._stream_in import StreamIn
 
 class LabJackDevice:
     """
@@ -379,5 +379,4 @@ if __name__ == "__main__":
     lj_device.configure_register(AIN_ALL_NEGATIVE_CH=ljm.constants.GND, AIN_ALL_RANGE=10)
     
     # disconnect from LabJack
-
     del lj_device

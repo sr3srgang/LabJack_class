@@ -1,6 +1,6 @@
-from labjack_device import LabJackDevice
+from .labjack_device import LabJackDevice
 from labjack import ljm
-from _ljm_aux import *
+from ._ljm_aux import *
 
 import asyncio
 import threading
