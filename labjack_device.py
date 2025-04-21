@@ -79,18 +79,22 @@ class LabJackDevice:
         Ensure disconnection when used as a context manager (i.e., "with" keyword).
         Disconnect from the LabJack device if connected when an object is about to be disposed.
         """
-        try: 
-            self._check_connection()
-            self._disconnect()
-        except LabJackNoConnectionError:
-            pass
+        if hasattr(self, '_handle') and self._handle is not None:
+            try:
+                self._close()
+            except Exception:
+                pass
         
     def __del__(self) -> None:
         """
         destructor
         Disconnect from the LabJack device if connected when an object is about to be disposed.    
         """
-        self.__exit__(None, None, None)
+        try:
+            self.__exit__(None, None, None)
+        except Exception:
+            # Don't let destructor crash the interpreter
+            pass
         
     def __str__(self) -> str:
         msg = "LabJack device instance:"
@@ -362,7 +366,7 @@ if __name__ == "__main__":
     lj_device = LabJackDevice(
         device_type=LabJackDeviceTypeEnum.T7,
         connection_type=LabJackConnectionTypeEnum.ETHERNET,
-        device_identifier='192.168.1.120',
+        device_identifier='192.168.1.128',
     )
     
     # # (Optional) configure `ljm` library
